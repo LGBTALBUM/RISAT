@@ -6,6 +6,7 @@ This repository contains the first working RISAT-1 reference implementation:
 
 - `risat-enc-tx`: image → stereo WAV / live sound-card output
 - `risat-dec-rx`: stereo WAV / live sound-card input → recovered image
+- `risat-gui`: desktop TX/RX application for Windows, macOS, and Linux
 - continuous-phase 4-FSK at 600, 1200, or 2400 baud
 - Mid/Side diversity over the two RCA channels
 - calibration tone and chirp
@@ -30,6 +31,32 @@ For direct playback/recording through an audio interface:
 ```bash
 python -m pip install -e ".[audio]"
 ```
+
+
+## Desktop GUI
+
+Install the audio extra when you want direct sound-card playback or recording:
+
+```bash
+python -m pip install -e ".[audio]"
+risat-gui
+```
+
+You can also launch it through the unified command:
+
+```bash
+risat gui
+```
+
+The GUI provides separate TX and RX tabs:
+
+- TX image preview, resolution/format/quality controls, baud and repetition settings
+- WAV generation, optional JSON report, and direct stereo sound-card playback
+- RX decoding from an existing WAV or a timed stereo recording
+- automatic recovered-image extension, image preview, diagnostics, and saved recordings
+- stereo input/output device selection with a system-default fallback
+
+Tk is included with normal Windows and python.org macOS Python installations. On Debian/Ubuntu, install it with `sudo apt install python3-tk` when necessary.
 
 ## Encode / transmit
 

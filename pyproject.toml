@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "risat"
-version = "0.1.0"
+version = "0.2.0"
 description = "RCA-Image Stereo Analog Transport encoder/decoder"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,6 +25,7 @@ dev = ["pytest>=8.0"]
 risat = "risat.cli:main"
 risat-enc-tx = "risat.cli:tx_main"
 risat-dec-rx = "risat.cli:rx_main"
+risat-gui = "risat.gui:gui_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/risat"]

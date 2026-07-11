@@ -59,3 +59,13 @@ def test_gain_noise_and_speed_correction(tmp_path: Path) -> None:
     result, report = decode_from_audio(damaged, SAMPLE_RATE, baud=1200)
     assert result.image_bytes == encoded.data
     assert abs(report["speed_ratio"] - speed) < 0.004
+
+
+def test_audio_device_parser() -> None:
+    from risat.audio_io import parse_device
+
+    assert parse_device(None) is None
+    assert parse_device("系统默认") is None
+    assert parse_device("3") == 3
+    assert parse_device("7: USB Audio CODEC (2 in)") == 7
+    assert parse_device("USB Audio CODEC") == "USB Audio CODEC"
