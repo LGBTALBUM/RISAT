@@ -10,6 +10,7 @@ from scipy.io import wavfile
 from .modem import (
     DEFAULT_BAUD,
     SAMPLE_RATE,
+    SUPPORTED_BAUDS,
     align_and_normalize_channels,
     channel_candidates,
     correct_global_speed,
@@ -75,36 +76,55 @@ def decode_from_audio(
     audio: np.ndarray,
     sample_rate: int,
     *,
-    baud: int = DEFAULT_BAUD,
+    baud: int | None = None,
     rs_nsym: int = 32,
 ) -> tuple[RecoveryResult, dict[str, object]]:
     corrected, speed_ratio = correct_global_speed(audio, sample_rate)
     corrected = align_and_normalize_channels(corrected)
-    streams: list[bytes] = []
-    reports: dict[str, object] = {}
-    errors: dict[str, str] = {}
-    for name, samples in channel_candidates(corrected).items():
+
+    preferred = DEFAULT_BAUD if baud is None else int(baud)
+    if preferred not in SUPPORTED_BAUDS:
+        raise ValueError(f"unsupported baud: {preferred}")
+    baud_candidates = [preferred, *(value for value in SUPPORTED_BAUDS if value != preferred)]
+    all_errors: dict[str, dict[str, str]] = {}
+
+    for candidate_baud in baud_candidates:
+        streams: list[bytes] = []
+        reports: dict[str, object] = {}
+        errors: dict[str, str] = {}
+        for name, samples in channel_candidates(corrected).items():
+            try:
+                stream, report = demodulate(
+                    samples, baud=candidate_baud, speed_ratio=speed_ratio
+                )
+                streams.append(stream)
+                reports[name] = asdict(report)
+            except Exception as exc:  # candidate diversity is intentional
+                errors[name] = str(exc)
+        all_errors[str(candidate_baud)] = errors
+        if not streams:
+            continue
         try:
-            stream, report = demodulate(samples, baud=baud, speed_ratio=speed_ratio)
-            streams.append(stream)
-            reports[name] = asdict(report)
-        except Exception as exc:  # candidate diversity is intentional
-            errors[name] = str(exc)
-    if not streams:
-        raise ProtocolError(f"all channel candidates failed: {errors}")
-    result = recover_container(streams, rs_nsym=rs_nsym)
-    diagnostic = {
-        "sample_rate": SAMPLE_RATE,
-        "input_sample_rate": sample_rate,
-        "speed_ratio": speed_ratio,
-        "successful_candidates": list(reports),
-        "candidate_reports": reports,
-        "candidate_errors": errors,
-        "recovered_frames": result.recovered_frames,
-        "total_frames": result.total_frames,
-        "metadata": result.metadata,
-    }
-    return result, diagnostic
+            result = recover_container(streams, rs_nsym=rs_nsym)
+        except Exception as exc:
+            all_errors[str(candidate_baud)]["frames"] = str(exc)
+            continue
+        diagnostic = {
+            "sample_rate": SAMPLE_RATE,
+            "input_sample_rate": sample_rate,
+            "speed_ratio": speed_ratio,
+            "requested_baud": baud,
+            "detected_baud": candidate_baud,
+            "successful_candidates": list(reports),
+            "candidate_reports": reports,
+            "candidate_errors": all_errors,
+            "recovered_frames": result.recovered_frames,
+            "total_frames": result.total_frames,
+            "metadata": result.metadata,
+        }
+        return result, diagnostic
+
+    raise ProtocolError(f"all baud/channel candidates failed: {all_errors}")
 
 
 def write_report(path: Path, report: dict[str, object]) -> None:

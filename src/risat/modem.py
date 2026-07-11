@@ -8,6 +8,7 @@ from scipy import signal
 
 SAMPLE_RATE = 48_000
 DEFAULT_BAUD = 1_200
+SUPPORTED_BAUDS = (600, 1_200, 2_400)
 DEFAULT_TONES = (2100.0, 3500.0, 4900.0, 6300.0)
 TRAINING_SYMBOLS = np.random.default_rng(0x52495341).integers(0, 4, size=192, dtype=np.uint8)
 SYNC_WORD = b"RISAT-AUDIO-SYNC\x1d\xc7"
@@ -137,11 +138,51 @@ def _dominant_frequency(samples: np.ndarray, sample_rate: int, low: float, high:
     return frequency
 
 
+def _find_calibration_start(audio: np.ndarray) -> int:
+    """Locate the RISAT preamble even when a recording has leading silence.
+
+    The logarithmic chirp is much less ambiguous than the reference tone or
+    FSK payload.  A normalized FFT correlation keeps the search fast for long
+    captures and remains useful with modest tape-speed error.
+    """
+
+    mono = np.mean(audio, axis=1) if audio.ndim == 2 else np.asarray(audio)
+    search = np.asarray(mono[: min(len(mono), 30 * SAMPLE_RATE)], dtype=np.float64)
+    chirp_start = round((SILENCE_SECONDS + REFERENCE_SECONDS) * SAMPLE_RATE)
+    chirp_end = chirp_start + round(CHIRP_SECONDS * SAMPLE_RATE)
+    template = calibration_audio()[chirp_start:chirp_end].astype(np.float64)
+    if len(search) < len(template):
+        return 0
+
+    template -= np.mean(template)
+    search -= np.median(search[: min(len(search), SAMPLE_RATE // 2)])
+    correlation = signal.correlate(search, template, mode="valid", method="fft")
+    window_energy = signal.fftconvolve(
+        search * search, np.ones(len(template), dtype=np.float64), mode="valid"
+    )
+    denominator = np.sqrt(
+        np.maximum(window_energy * float(np.sum(template * template)), 1e-18)
+    )
+    normalized = np.abs(correlation) / denominator
+    peak = int(np.argmax(normalized))
+    if float(normalized[peak]) < 0.15:
+        return 0
+    estimated = peak - chirp_start
+    # Speed error slightly shifts a fixed-length chirp correlation.  Leaving a
+    # few milliseconds of silence is harmless; trimming into the reference is not.
+    return max(0, estimated - round(0.015 * SAMPLE_RATE))
+
+
 def correct_global_speed(audio: np.ndarray, sample_rate: int) -> tuple[np.ndarray, float]:
     if sample_rate != SAMPLE_RATE:
         target_len = round(len(audio) * SAMPLE_RATE / sample_rate)
         audio = signal.resample(audio, target_len, axis=0).astype(np.float32)
         sample_rate = SAMPLE_RATE
+
+    calibration_start = _find_calibration_start(audio)
+    if calibration_start:
+        audio = audio[calibration_start:]
+
     mono = np.mean(audio, axis=1) if audio.ndim == 2 else audio
     start = round(0.29 * sample_rate)
     end = min(len(mono), round(0.70 * sample_rate))
@@ -240,7 +281,7 @@ def find_modem_start(samples: np.ndarray, *, baud: int, tones: tuple[float, floa
     samples_per_symbol = SAMPLE_RATE // baud
     cosines, sines = _tone_basis(samples_per_symbol, tones)
     expected = round((SILENCE_SECONDS + REFERENCE_SECONDS + CHIRP_SECONDS + GUARD_SECONDS) * SAMPLE_RATE)
-    radius = round(0.08 * SAMPLE_RATE)
+    radius = round(0.16 * SAMPLE_RATE)
     best_start = expected
     best_score = -1.0
     for candidate in range(max(0, expected - radius), min(len(samples), expected + radius), max(1, samples_per_symbol // 4)):
@@ -282,23 +323,38 @@ def demodulate(samples: np.ndarray, *, baud: int = DEFAULT_BAUD, tones: tuple[fl
     weights = median_level / np.maximum(levels, median_level * 0.1)
 
     symbol_count = (len(samples) - start) // samples_per_symbol
-    decoded = np.empty(symbol_count, dtype=np.uint8)
-    for index in range(symbol_count):
-        a = start + index * samples_per_symbol
-        b = a + samples_per_symbol
-        energies = _symbol_energies(samples[a:b], cosines, sines) * (weights**2)
-        decoded[index] = int(np.argmax(energies))
-
-    payload_symbols = decoded[len(TRAINING_SYMBOLS) :]
-    raw = symbols_to_bytes(payload_symbols)
-    sync_index = raw.find(SYNC_WORD)
-    if sync_index < 0 or sync_index > 8:
+    raw = b""
+    sync_index = -1
+    selected_weights = np.ones(4, dtype=np.float64)
+    # Neutral detection is safest on a clean/direct cable path.  The learned
+    # variants are fallbacks for frequency-shaped analog media.  This avoids
+    # small calibration differences flipping otherwise valid 600-baud symbols.
+    for candidate_weights in (
+        np.ones(4, dtype=np.float64),
+        weights,
+        weights**2,
+    ):
+        decoded = np.empty(symbol_count, dtype=np.uint8)
+        for index in range(symbol_count):
+            a = start + index * samples_per_symbol
+            b = a + samples_per_symbol
+            energies = _symbol_energies(samples[a:b], cosines, sines) * candidate_weights
+            decoded[index] = int(np.argmax(energies))
+        payload_symbols = decoded[len(TRAINING_SYMBOLS) :]
+        candidate_raw = symbols_to_bytes(payload_symbols)
+        candidate_sync = candidate_raw.find(SYNC_WORD)
+        if 0 <= candidate_sync <= 8:
+            raw = candidate_raw
+            sync_index = candidate_sync
+            selected_weights = candidate_weights
+            break
+    if sync_index < 0:
         raise ModemError("audio sync word was not recovered")
     payload = raw[sync_index + len(SYNC_WORD) :]
     report = DemodulationReport(
         start_sample=start,
         training_accuracy=accuracy,
-        tone_weights=tuple(float(value) for value in weights),
+        tone_weights=tuple(float(value) for value in selected_weights),
         speed_ratio=speed_ratio,
     )
     return payload, report

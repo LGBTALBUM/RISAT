@@ -53,8 +53,12 @@ The GUI provides separate TX and RX tabs:
 - TX image preview, resolution/format/quality controls, baud and repetition settings
 - WAV generation, optional JSON report, and direct stereo sound-card playback
 - RX decoding from an existing WAV or a timed stereo recording
+- automatic 600/1200/2400 baud detection with the selected value used as the first attempt
 - automatic recovered-image extension, image preview, diagnostics, and saved recordings
 - stereo input/output device selection with a system-default fallback
+- live GUI language switching: Traditional Chinese, English, Japanese, and Catalan
+
+The GUI selects a language from the operating-system locale on first launch. You can switch between **繁體中文**, **English**, **日本語**, and **Català** from the header; the selection is saved for the next launch. The aliases `zh-tw`, `eng`, `ja`, and `cat` are also accepted through the `RISAT_LANG` environment variable.
 
 Tk is included with normal Windows and python.org macOS Python installations. On Debian/Ubuntu, install it with `sudo apt install python3-tk` when necessary.
 
@@ -99,7 +103,7 @@ risat-dec-rx --record 90 --device 2 \
   --report rx-report.json
 ```
 
-The RX report records the measured speed ratio, synchronized channel candidates, training accuracy, equalization weights, frame count, and embedded image metadata.
+The RX report records the detected baud rate, measured speed ratio, synchronized channel candidates, training accuracy, equalization weights, frame count, and embedded image metadata. The decoder also locates the calibration chirp, so a modest amount of silence before the RISAT signal is tolerated.
 
 ## Suggested analog settings
 

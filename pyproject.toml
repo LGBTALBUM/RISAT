@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "risat"
-version = "0.2.0"
+version = "0.3.0"
 description = "RCA-Image Stereo Analog Transport encoder/decoder"
 readme = "README.md"
 requires-python = ">=3.10"
