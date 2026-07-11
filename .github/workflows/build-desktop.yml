@@ -1,0 +1,364 @@
+name: Build desktop packages
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Optional existing tag to create/update, for example v0.3.0"
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - "src/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-desktop.yml"
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: desktop-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.12"
+  PYINSTALLER_VERSION: "6.21.0"
+
+jobs:
+  windows-exe:
+    name: Windows x64 EXE
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install build dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[audio]"
+          python -m pip install "pyinstaller==${{ env.PYINSTALLER_VERSION }}"
+
+      - name: Read project version
+        id: metadata
+        shell: pwsh
+        run: |
+          $version = python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])"
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Create GUI entry point
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force packaging | Out-Null
+          @'
+          from risat.gui import gui_main
+
+          raise SystemExit(gui_main())
+          '@ | Set-Content -Path packaging/risat_gui_entry.py -Encoding utf8
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          python -m PyInstaller `
+            --noconfirm `
+            --clean `
+            --onefile `
+            --windowed `
+            --name RISAT `
+            --paths src `
+            --collect-all sounddevice `
+            --hidden-import _cffi_backend `
+            packaging/risat_gui_entry.py
+
+          $version = "${{ steps.metadata.outputs.version }}"
+          Move-Item dist/RISAT.exe "dist/RISAT-$version-windows-x64.exe"
+          Get-FileHash "dist/RISAT-$version-windows-x64.exe" -Algorithm SHA256
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RISAT-windows-x64
+          path: dist/RISAT-${{ steps.metadata.outputs.version }}-windows-x64.exe
+          if-no-files-found: error
+          retention-days: 14
+
+  macos-arm64-dmg:
+    name: macOS Apple Silicon DMG
+    runs-on: macos-15
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify Apple Silicon runner
+        shell: bash
+        run: |
+          test "$(uname -m)" = "arm64"
+          sw_vers
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[audio]"
+          python -m pip install "pyinstaller==${PYINSTALLER_VERSION}"
+
+      - name: Read project version
+        id: metadata
+        shell: bash
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GUI entry point
+        shell: bash
+        run: |
+          mkdir -p packaging
+          cat > packaging/risat_gui_entry.py <<'PY'
+          from risat.gui import gui_main
+
+          raise SystemExit(gui_main())
+          PY
+
+      - name: Build Apple Silicon application
+        shell: bash
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --windowed \
+            --name RISAT \
+            --target-arch arm64 \
+            --osx-bundle-identifier io.github.lgbtalbum.risat \
+            --paths src \
+            --collect-all sounddevice \
+            --hidden-import _cffi_backend \
+            packaging/risat_gui_entry.py
+
+          executable="dist/RISAT.app/Contents/MacOS/RISAT"
+          file "$executable"
+          test "$(lipo -archs "$executable")" = "arm64"
+
+          # Ad-hoc signing keeps the bundle internally consistent. It is not notarization.
+          codesign --force --deep --sign - dist/RISAT.app
+          codesign --verify --deep --strict --verbose=2 dist/RISAT.app
+
+      - name: Create DMG
+        shell: bash
+        run: |
+          version="${{ steps.metadata.outputs.version }}"
+          dmg_root="build/dmg-root"
+          dmg_path="dist/RISAT-${version}-macOS-arm64.dmg"
+
+          rm -rf "$dmg_root"
+          mkdir -p "$dmg_root"
+          cp -R dist/RISAT.app "$dmg_root/RISAT.app"
+          ln -s /Applications "$dmg_root/Applications"
+
+          hdiutil create \
+            -volname "RISAT ${version}" \
+            -srcfolder "$dmg_root" \
+            -ov \
+            -format UDZO \
+            "$dmg_path"
+
+          shasum -a 256 "$dmg_path"
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RISAT-macOS-arm64
+          path: dist/RISAT-${{ steps.metadata.outputs.version }}-macOS-arm64.dmg
+          if-no-files-found: error
+          retention-days: 14
+
+  linux-deb:
+    name: Debian/Ubuntu x64 DEB
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install system build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            python3-tk \
+            libportaudio2 \
+            portaudio19-dev \
+            fakeroot
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install Python build dependencies
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[audio]"
+          python -m pip install "pyinstaller==${PYINSTALLER_VERSION}"
+
+      - name: Read project version
+        id: metadata
+        shell: bash
+        run: |
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GUI entry point
+        shell: bash
+        run: |
+          mkdir -p packaging
+          cat > packaging/risat_gui_entry.py <<'PY'
+          from risat.gui import gui_main
+
+          raise SystemExit(gui_main())
+          PY
+
+      - name: Build Linux application directory
+        shell: bash
+        run: |
+          python -m PyInstaller \
+            --noconfirm \
+            --clean \
+            --onedir \
+            --windowed \
+            --name RISAT \
+            --paths src \
+            --collect-all sounddevice \
+            --hidden-import _cffi_backend \
+            packaging/risat_gui_entry.py
+
+          file dist/RISAT/RISAT
+
+      - name: Build DEB package
+        shell: bash
+        run: |
+          version="${{ steps.metadata.outputs.version }}"
+          package_root="build/deb/risat"
+          output="dist/risat_${version}_amd64.deb"
+
+          rm -rf "$package_root"
+          mkdir -p \
+            "$package_root/DEBIAN" \
+            "$package_root/opt/risat" \
+            "$package_root/usr/bin" \
+            "$package_root/usr/share/applications" \
+            "$package_root/usr/share/doc/risat"
+
+          cp -a dist/RISAT/. "$package_root/opt/risat/"
+          cp LICENSE "$package_root/usr/share/doc/risat/copyright"
+
+          cat > "$package_root/usr/bin/risat-gui" <<'SH'
+          #!/bin/sh
+          exec /opt/risat/RISAT "$@"
+          SH
+          chmod 0755 "$package_root/usr/bin/risat-gui"
+
+          cat > "$package_root/usr/share/applications/io.github.lgbtalbum.risat.desktop" <<'DESKTOP'
+          [Desktop Entry]
+          Type=Application
+          Name=RISAT
+          Comment=RCA-Image Stereo Analog Transport
+          Exec=risat-gui
+          Icon=applications-multimedia
+          Terminal=false
+          Categories=AudioVideo;Audio;Graphics;
+          DESKTOP
+
+          installed_size="$(du -sk "$package_root" | cut -f1)"
+          cat > "$package_root/DEBIAN/control" <<CONTROL
+          Package: risat
+          Version: ${version}
+          Section: sound
+          Priority: optional
+          Architecture: amd64
+          Maintainer: LGBTALBUM
+          Installed-Size: ${installed_size}
+          Depends: libportaudio2
+          Description: RCA-Image Stereo Analog Transport
+           Desktop TX/RX application for converting images to stereo analog audio
+           and recovering images from RISAT recordings.
+          CONTROL
+
+          chmod 0755 "$package_root/DEBIAN"
+          fakeroot dpkg-deb --build --root-owner-group "$package_root" "$output"
+          dpkg-deb --info "$output"
+          dpkg-deb --contents "$output"
+          sha256sum "$output"
+
+      - name: Upload DEB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RISAT-linux-amd64-deb
+          path: dist/risat_${{ steps.metadata.outputs.version }}_amd64.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Attach packages to GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    needs:
+      - windows-exe
+      - macos-arm64-dmg
+      - linux-deb
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_tag }}
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Download all packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: RISAT-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Verify tag and create checksums
+        shell: bash
+        run: |
+          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          test "$RELEASE_TAG" = "v${version}"
+          cd release-assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" \
+              --verify-tag \
+              --title "RISAT $RELEASE_TAG" \
+              --generate-notes
+          fi
+
+          gh release upload "$RELEASE_TAG" release-assets/* --clobber
