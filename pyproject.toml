@@ -1,0 +1,34 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "risat"
+version = "0.1.0"
+description = "RCA-Image Stereo Analog Transport encoder/decoder"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "LGBTALBUM"}]
+dependencies = [
+  "numpy>=1.26",
+  "scipy>=1.11",
+  "Pillow>=10.0",
+  "reedsolo>=1.7",
+]
+
+[project.optional-dependencies]
+audio = ["sounddevice>=0.5"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+risat = "risat.cli:main"
+risat-enc-tx = "risat.cli:tx_main"
+risat-dec-rx = "risat.cli:rx_main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/risat"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
