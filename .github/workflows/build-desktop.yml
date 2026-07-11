@@ -333,6 +333,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
+      - name: Set up Python for release metadata
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
       - name: Download all packages
         uses: actions/download-artifact@v4
         with:
@@ -343,11 +348,45 @@ jobs:
       - name: Verify tag and create checksums
         shell: bash
         run: |
-          version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
-          test "$RELEASE_TAG" = "v${version}"
-          cd release-assets
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
+          set -euo pipefail
+
+          version="$(python -c 'import tomllib; print(tomllib.load(open("pyproject.toml", "rb"))["project"]["version"])')"
+          release_tag="$(printf '%s' "$RELEASE_TAG" | tr -d '\r' | xargs)"
+
+          if [[ -z "$release_tag" ]]; then
+            echo "::error title=Missing release tag::Provide release_tag when running manually, for example v${version}."
+            exit 1
+          fi
+
+          if [[ "$release_tag" != v* ]]; then
+            release_tag="v${release_tag}"
+          fi
+
+          expected_tag="v${version}"
+          echo "Project version: ${version}"
+          echo "Requested tag:  ${release_tag}"
+          echo "Expected tag:   ${expected_tag}"
+
+          if [[ "$release_tag" != "$expected_tag" ]]; then
+            echo "::error title=Release tag mismatch::Requested ${release_tag}, but pyproject.toml declares version ${version}. Use ${expected_tag} or update the project version."
+            exit 1
+          fi
+
+          if ! find release-assets -maxdepth 1 -type f -print -quit | grep -q .; then
+            echo "::error title=No release assets::No downloaded package files were found in release-assets/."
+            find release-assets -maxdepth 3 -print || true
+            exit 1
+          fi
+
+          printf 'RELEASE_TAG=%s\n' "$release_tag" >> "$GITHUB_ENV"
+
+          (
+            cd release-assets
+            find . -maxdepth 1 -type f ! -name SHA256SUMS.txt -print0 \
+              | sort -z \
+              | xargs -0 sha256sum > SHA256SUMS.txt
+            cat SHA256SUMS.txt
+          )
 
       - name: Create or update GitHub Release
         shell: bash
