@@ -69,3 +69,60 @@ def test_audio_device_parser() -> None:
     assert parse_device("3") == 3
     assert parse_device("7: USB Audio CODEC (2 in)") == 7
     assert parse_device("USB Audio CODEC") == "USB Audio CODEC"
+
+
+def test_600_baud_roundtrip(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    make_image(source)
+    encoded = encode_image(source, resolution=(48, 36), output_format="jpeg", quality=60)
+    audio, _ = encode_to_audio(
+        source,
+        encoded.data,
+        width=encoded.width,
+        height=encoded.height,
+        image_format=encoded.image_format,
+        repeats=2,
+        baud=600,
+    )
+    result, report = decode_from_audio(audio, SAMPLE_RATE, baud=600)
+    assert result.image_bytes == encoded.data
+    assert report["detected_baud"] == 600
+
+
+def test_auto_baud_falls_back_from_wrong_preference(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    make_image(source)
+    encoded = encode_image(source, resolution=(48, 36), output_format="jpeg", quality=60)
+    audio, _ = encode_to_audio(
+        source,
+        encoded.data,
+        width=encoded.width,
+        height=encoded.height,
+        image_format=encoded.image_format,
+        repeats=2,
+        baud=1200,
+    )
+    result, report = decode_from_audio(audio, SAMPLE_RATE, baud=600)
+    assert result.image_bytes == encoded.data
+    assert report["requested_baud"] == 600
+    assert report["detected_baud"] == 1200
+
+
+def test_leading_silence_is_trimmed(tmp_path: Path) -> None:
+    source = tmp_path / "source.png"
+    make_image(source)
+    encoded = encode_image(source, resolution=(48, 36), output_format="jpeg", quality=60)
+    audio, _ = encode_to_audio(
+        source,
+        encoded.data,
+        width=encoded.width,
+        height=encoded.height,
+        image_format=encoded.image_format,
+        repeats=2,
+        baud=1200,
+    )
+    leading = np.zeros((round(0.45 * SAMPLE_RATE), 2), dtype=np.float32)
+    capture = np.concatenate((leading, audio), axis=0)
+    result, report = decode_from_audio(capture, SAMPLE_RATE, baud=None)
+    assert result.image_bytes == encoded.data
+    assert report["detected_baud"] == 1200

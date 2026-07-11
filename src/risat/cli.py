@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     rx = subparsers.add_parser("dec-rx", help="decode a RISAT stereo WAV/RCA recording")
     rx.add_argument("input", nargs="?", type=Path)
     rx.add_argument("-o", "--output", type=Path, default=Path("risat-recovered.img"))
-    rx.add_argument("--baud", type=int, choices=(600, 1200, 2400), default=DEFAULT_BAUD)
+    rx.add_argument("--baud", choices=("auto", "600", "1200", "2400"), default="auto")
     rx.add_argument("--record", type=float, metavar="SECONDS", help="record stereo input instead of reading a WAV")
     rx.add_argument("--device", help="sounddevice input device name or index")
     rx.add_argument("--save-recording", type=Path)
@@ -78,7 +78,9 @@ def command_rx(args: argparse.Namespace) -> int:
         if args.input is None:
             raise ValueError("provide an input WAV or use --record SECONDS")
         sample_rate, audio = read_wav(args.input)
-    result, report = decode_from_audio(audio, sample_rate, baud=args.baud)
+    result, report = decode_from_audio(
+        audio, sample_rate, baud=None if args.baud == "auto" else int(args.baud)
+    )
     output = args.output
     if output.suffix == ".img":
         image_format = str(result.metadata.get("format", "png"))
@@ -86,7 +88,11 @@ def command_rx(args: argparse.Namespace) -> int:
     output.write_bytes(result.image_bytes)
     write_report(args.report, report)
     print(f"recovered image to {output}")
-    print(f"frames: {result.recovered_frames}/{result.total_frames}; candidates: {', '.join(report['successful_candidates'])}")
+    print(
+        f"frames: {result.recovered_frames}/{result.total_frames}; "
+        f"baud: {report['detected_baud']}; "
+        f"candidates: {', '.join(report['successful_candidates'])}"
+    )
     return 0
 
 
