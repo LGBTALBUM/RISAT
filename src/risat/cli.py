@@ -4,29 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
-import numpy as np
-
+from .audio_io import parse_device, play_audio, record_audio
 from .channel import decode_from_audio, encode_to_audio, read_wav, write_report, write_wav
 from .image_codec import encode_image, parse_resolution
 from .modem import DEFAULT_BAUD, SAMPLE_RATE
 from .protocol import ProtocolError
 
-
-def _play(audio: np.ndarray, device: str | int | None) -> None:
-    try:
-        import sounddevice as sd
-    except ImportError as exc:
-        raise RuntimeError("live playback requires: pip install 'risat[audio]'") from exc
-    sd.play(audio, SAMPLE_RATE, device=device, blocking=True)
-
-
-def _record(seconds: float, device: str | int | None) -> np.ndarray:
-    try:
-        import sounddevice as sd
-    except ImportError as exc:
-        raise RuntimeError("live recording requires: pip install 'risat[audio]'") from exc
-    frames = round(seconds * SAMPLE_RATE)
-    return sd.rec(frames, samplerate=SAMPLE_RATE, channels=2, dtype="float32", device=device, blocking=True)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,16 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
     rx.add_argument("--device", help="sounddevice input device name or index")
     rx.add_argument("--save-recording", type=Path)
     rx.add_argument("--report", type=Path, default=Path("risat-rx-report.json"))
+
+    subparsers.add_parser("gui", help="open the RISAT TX/RX desktop application")
     return parser
 
-
-def _parse_device(value: str | None) -> str | int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        return value
 
 
 def command_tx(args: argparse.Namespace) -> int:
@@ -87,13 +64,13 @@ def command_tx(args: argparse.Namespace) -> int:
     print(f"encoded {encoded.width}x{encoded.height} {encoded.image_format} image to {args.output}")
     print(f"duration: {report['audio_seconds']:.2f}s, frames: {report['frames']}, image bytes: {report['encoded_bytes']}")
     if args.play:
-        _play(audio, _parse_device(args.device))
+        play_audio(audio, SAMPLE_RATE, device=parse_device(args.device))
     return 0
 
 
 def command_rx(args: argparse.Namespace) -> int:
     if args.record is not None:
-        audio = _record(args.record, _parse_device(args.device))
+        audio = record_audio(args.record, SAMPLE_RATE, device=parse_device(args.device), channels=2)
         sample_rate = SAMPLE_RATE
         if args.save_recording:
             write_wav(args.save_recording, audio)
@@ -117,6 +94,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
+        if args.command == "gui":
+            from .gui import gui_main
+
+            return gui_main()
         return command_tx(args) if args.command == "enc-tx" else command_rx(args)
     except (ValueError, RuntimeError, OSError, ProtocolError) as exc:
         parser.error(str(exc))
